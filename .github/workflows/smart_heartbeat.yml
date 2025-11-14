@@ -1,0 +1,68 @@
+name: Smart Daily Commit
+
+on:
+  schedule:
+    - cron: '30 17 * * *'   # প্রতি দিন BDT 11:30 PM => UTC 17:30
+  workflow_dispatch: {}      # ম্যানুয়ালি চালানোর সুবিধা
+
+permissions:
+  contents: write
+
+jobs:
+  smart-heartbeat:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_USER: AnoyKhan   # <-- এখানে তোমার GitHub username দাও
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Check if user committed today (public events)
+        id: check
+        run: |
+          TODAY=$(date -u -d '+6 hours' +%Y-%m-%d)
+          echo "Checking commits for $TODAY (BDT)..."
+          # get public events and count PushEvent created_at starting with TODAY
+          COMMITS=$(curl -s "https://api.github.com/users/${GITHUB_USER}/events/public" \
+            | jq -r "[.[] | select(.type==\"PushEvent\") | .created_at] | map(select(startswith(\"${TODAY}\"))) | length")
+          echo "Commits today: $COMMITS"
+          if [ "$COMMITS" -gt 0 ]; then
+            echo "skip_commit=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_commit=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure git author
+        if: steps.check.outputs.skip_commit == 'false'
+        run: |
+          git config --global user.name "${{ secrets.COMMIT_NAME }}"
+          git config --global user.email "${{ secrets.COMMIT_EMAIL }}"
+          git config --global --list
+
+      - name: Make heartbeat commit (if no commits today)
+        if: steps.check.outputs.skip_commit == 'false'
+        run: |
+          # create heartbeat
+          echo "Last heartbeat: $(date -u -d '+6 hours' '+%Y-%m-%d %H:%M:%S (BDT)')" > heartbeat.txt
+          git add heartbeat.txt
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: heartbeat $(date -u -d '+6 hours' +%Y-%m-%dT%H:%M:%S)"
+          # set remote to use PAT for auth and push to default repo/branch
+          git remote set-url origin https://x-access-token:${{ secrets.PERSONAL_TOKEN }}@github.com/${{ github.repository }}.git
+          git push origin HEAD:main
+
+      - name: Log skip message
+        if: steps.check.outputs.skip_commit == 'true'
+        run: echo "Commit skipped — already committed today ✅"
